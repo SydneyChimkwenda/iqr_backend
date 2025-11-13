@@ -8,7 +8,7 @@ if (!process.env.PUPPETEER_CACHE_DIR) {
 }
 
 import puppeteer from 'puppeteer';
-import { install, computeExecutablePath } from '@puppeteer/browsers';
+import { install, computeExecutablePath, getInstalledBrowsers } from '@puppeteer/browsers';
 import { execSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 
@@ -446,17 +446,24 @@ async function findChromeExecutable() {
 
   const cacheDir = getCacheDir();
   
-  // Use computeExecutablePath to get the expected path
+  // Check installed browsers to get the Chrome version
   try {
-    const expectedPath = computeExecutablePath({
-      browser: 'chrome',
+    const installedBrowsers = await getInstalledBrowsers({
       cacheDir: cacheDir,
     });
-    if (expectedPath && existsSync(expectedPath)) {
-      return expectedPath;
+    const chromeInstall = installedBrowsers.find(b => b.browser === 'chrome');
+    if (chromeInstall) {
+      const expectedPath = computeExecutablePath({
+        browser: 'chrome',
+        buildId: chromeInstall.buildId,
+        cacheDir: cacheDir,
+      });
+      if (expectedPath && existsSync(expectedPath)) {
+        return expectedPath;
+      }
     }
   } catch (e) {
-    console.log('computeExecutablePath failed:', e.message);
+    console.log('getInstalledBrowsers/computeExecutablePath failed:', e.message);
   }
 
   // First, try Puppeteer's built-in method (most reliable)
@@ -536,19 +543,33 @@ export async function generatePDFFromDocument(document, moduleName) {
         
         // Install Chrome using @puppeteer/browsers
         console.log(`Installing Chrome to cache directory: ${cacheDir}`);
-        await install({
+        const installResult = await install({
           browser: 'chrome',
           cacheDir: cacheDir,
         });
-        console.log('Chrome installation completed');
+        console.log('Chrome installation completed', installResult);
         
-        // Get the expected path after installation
+        // Get the expected path after installation using the install result
         try {
-          executablePath = computeExecutablePath({
-            browser: 'chrome',
-            cacheDir: cacheDir,
-          });
-          console.log(`Computed executable path: ${executablePath}`);
+          if (installResult && installResult.executablePath) {
+            executablePath = installResult.executablePath;
+            console.log(`Using executable path from install result: ${executablePath}`);
+          } else {
+            // Get installed browsers to find the version
+            const installedBrowsers = await getInstalledBrowsers({
+              cacheDir: cacheDir,
+            });
+            const chromeInstall = installedBrowsers.find(b => b.browser === 'chrome');
+            if (chromeInstall) {
+              executablePath = computeExecutablePath({
+                browser: 'chrome',
+                buildId: chromeInstall.buildId,
+                cacheDir: cacheDir,
+              });
+              console.log(`Computed executable path: ${executablePath}`);
+            }
+          }
+          
           if (executablePath && existsSync(executablePath)) {
             console.log(`Found Chrome after installation: ${executablePath}`);
           } else {
@@ -589,18 +610,28 @@ export async function generatePDFFromDocument(document, moduleName) {
       launchOptions.executablePath = executablePath;
       console.log(`Using Chrome at: ${executablePath}`);
     } else {
-      // If we still don't have a path, try one more time with computeExecutablePath
+      // If we still don't have a path, try one more time
       const cacheDir = getCacheDir();
       try {
-        const computedPath = computeExecutablePath({
-          browser: 'chrome',
+        // Get installed browsers to find Chrome version
+        const installedBrowsers = await getInstalledBrowsers({
           cacheDir: cacheDir,
         });
-        if (computedPath && existsSync(computedPath)) {
-          launchOptions.executablePath = computedPath;
-          console.log(`Using computed Chrome path: ${computedPath}`);
+        const chromeInstall = installedBrowsers.find(b => b.browser === 'chrome');
+        if (chromeInstall) {
+          const computedPath = computeExecutablePath({
+            browser: 'chrome',
+            buildId: chromeInstall.buildId,
+            cacheDir: cacheDir,
+          });
+          if (computedPath && existsSync(computedPath)) {
+            launchOptions.executablePath = computedPath;
+            console.log(`Using computed Chrome path: ${computedPath}`);
+          } else {
+            throw new Error(`Chrome executable not found. Expected at: ${computedPath || 'unknown'}. Cache dir: ${cacheDir}. Build ID: ${chromeInstall.buildId}. Please ensure Chrome is installed via 'npx puppeteer browsers install chrome'`);
+          }
         } else {
-          throw new Error(`Chrome executable not found. Expected at: ${computedPath || 'unknown'}. Cache dir: ${cacheDir}. Please ensure Chrome is installed via 'npx puppeteer browsers install chrome'`);
+          throw new Error(`Chrome not installed. Cache dir: ${cacheDir}. Please ensure Chrome is installed via 'npx puppeteer browsers install chrome'`);
         }
       } catch (pathError) {
         throw new Error(`Chrome executable not found and could not compute path. Cache dir: ${cacheDir}. Error: ${pathError.message}. Please ensure Chrome is installed via 'npx puppeteer browsers install chrome'`);
