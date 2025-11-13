@@ -417,9 +417,6 @@ function generateDocumentHTML(document, moduleName, formatCurrency) {
   `;
 }
 
-// Configure chromium for serverless environments
-chromium.setGraphicsMode(false);
-
 export async function generatePDFFromDocument(document, moduleName) {
   let browser;
   try {
