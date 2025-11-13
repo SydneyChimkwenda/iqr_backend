@@ -1,4 +1,8 @@
 import puppeteer from 'puppeteer';
+import { install } from '@puppeteer/browsers';
+import { execSync } from 'child_process';
+import { existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
 
 // HTML template for PDF generation (same as frontend)
 function generateDocumentHTML(document, moduleName, formatCurrency) {
@@ -416,9 +420,99 @@ function generateDocumentHTML(document, moduleName, formatCurrency) {
   `;
 }
 
+// Helper function to find Chrome executable
+async function findChromeExecutable() {
+  // Check if explicit path is provided
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    if (existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+      return process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+  }
+
+  // First, try Puppeteer's built-in method (most reliable)
+  try {
+    const executablePath = puppeteer.executablePath();
+    if (executablePath && existsSync(executablePath)) {
+      return executablePath;
+    }
+  } catch (e) {
+    // Puppeteer couldn't find it automatically
+    console.log('Puppeteer.executablePath() failed:', e.message);
+  }
+
+  // Check common Puppeteer cache locations
+  const cacheDir = process.env.PUPPETEER_CACHE_DIR || 
+                   (process.env.HOME ? join(process.env.HOME, '.cache', 'puppeteer') : null) ||
+                   '/opt/render/.cache/puppeteer';
+  
+  // Try to find Chrome in cache directory using find command
+  try {
+    const findResult = execSync(`find ${cacheDir} -name chrome -type f 2>/dev/null | head -1`, { encoding: 'utf-8' }).trim();
+    if (findResult && existsSync(findResult)) {
+      return findResult;
+    }
+  } catch (e) {
+    // find command failed, continue with other methods
+  }
+
+  // Check system Chrome installations
+  const systemPaths = [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+  ];
+
+  for (const path of systemPaths) {
+    if (existsSync(path)) {
+      return path;
+    }
+  }
+
+  return null;
+}
+
 export async function generatePDFFromDocument(document, moduleName) {
   let browser;
   try {
+    // Try to find Chrome executable
+    let executablePath = await findChromeExecutable();
+    
+    // If Chrome is not found, try to install it
+    if (!executablePath) {
+      console.log('Chrome not found, attempting to install...');
+      try {
+        const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
+        
+        // Ensure cache directory exists
+        try {
+          if (!existsSync(cacheDir)) {
+            mkdirSync(cacheDir, { recursive: true });
+            console.log(`Created cache directory: ${cacheDir}`);
+          }
+        } catch (mkdirError) {
+          console.warn(`Could not create cache directory ${cacheDir}:`, mkdirError.message);
+        }
+        
+        await install({
+          browser: 'chrome',
+          cacheDir: cacheDir,
+        });
+        console.log('Chrome installation completed');
+        
+        // Try to find it again after installation
+        executablePath = await findChromeExecutable();
+        if (executablePath) {
+          console.log(`Found Chrome after installation: ${executablePath}`);
+        } else {
+          console.warn('Chrome installed but could not locate executable');
+        }
+      } catch (installError) {
+        console.error('Failed to install Chrome:', installError);
+        // Continue anyway, Puppeteer might still work
+      }
+    }
+
     const launchOptions = {
       headless: true,
       args: [
@@ -432,10 +526,10 @@ export async function generatePDFFromDocument(document, moduleName) {
       ],
     };
 
-    // Set executable path if provided via environment variable
-    // This is useful for custom Chrome installations
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-      launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    // Set executable path if we found one
+    if (executablePath) {
+      launchOptions.executablePath = executablePath;
+      console.log(`Using Chrome at: ${executablePath}`);
     }
 
     browser = await puppeteer.launch(launchOptions);
