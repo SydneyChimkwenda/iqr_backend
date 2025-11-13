@@ -1,8 +1,16 @@
+import { join } from 'path';
+
+// Set PUPPETEER_CACHE_DIR before importing puppeteer if not already set
+if (!process.env.PUPPETEER_CACHE_DIR) {
+  process.env.PUPPETEER_CACHE_DIR = process.env.HOME 
+    ? join(process.env.HOME, '.cache', 'puppeteer')
+    : '/opt/render/.cache/puppeteer';
+}
+
 import puppeteer from 'puppeteer';
-import { install } from '@puppeteer/browsers';
+import { install, computeExecutablePath } from '@puppeteer/browsers';
 import { execSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
 
 // HTML template for PDF generation (same as frontend)
 function generateDocumentHTML(document, moduleName, formatCurrency) {
@@ -420,6 +428,13 @@ function generateDocumentHTML(document, moduleName, formatCurrency) {
   `;
 }
 
+// Helper function to get cache directory
+function getCacheDir() {
+  return process.env.PUPPETEER_CACHE_DIR || 
+         (process.env.HOME ? join(process.env.HOME, '.cache', 'puppeteer') : null) ||
+         '/opt/render/.cache/puppeteer';
+}
+
 // Helper function to find Chrome executable
 async function findChromeExecutable() {
   // Check if explicit path is provided
@@ -427,6 +442,21 @@ async function findChromeExecutable() {
     if (existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
       return process.env.PUPPETEER_EXECUTABLE_PATH;
     }
+  }
+
+  const cacheDir = getCacheDir();
+  
+  // Use computeExecutablePath to get the expected path
+  try {
+    const expectedPath = computeExecutablePath({
+      browser: 'chrome',
+      cacheDir: cacheDir,
+    });
+    if (expectedPath && existsSync(expectedPath)) {
+      return expectedPath;
+    }
+  } catch (e) {
+    console.log('computeExecutablePath failed:', e.message);
   }
 
   // First, try Puppeteer's built-in method (most reliable)
@@ -439,11 +469,6 @@ async function findChromeExecutable() {
     // Puppeteer couldn't find it automatically
     console.log('Puppeteer.executablePath() failed:', e.message);
   }
-
-  // Check common Puppeteer cache locations
-  const cacheDir = process.env.PUPPETEER_CACHE_DIR || 
-                   (process.env.HOME ? join(process.env.HOME, '.cache', 'puppeteer') : null) ||
-                   '/opt/render/.cache/puppeteer';
   
   // Try to find Chrome in cache directory using find command
   try {
@@ -475,15 +500,30 @@ async function findChromeExecutable() {
 export async function generatePDFFromDocument(document, moduleName) {
   let browser;
   try {
+    const cacheDir = getCacheDir();
+    console.log(`PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR}`);
+    console.log(`Using cache directory: ${cacheDir}`);
+    
+    // Debug: List cache directory contents
+    try {
+      if (existsSync(cacheDir)) {
+        const lsResult = execSync(`ls -la ${cacheDir} 2>/dev/null || echo "Directory exists but cannot list"`, { encoding: 'utf-8' });
+        console.log(`Cache directory contents:\n${lsResult}`);
+      } else {
+        console.log(`Cache directory does not exist: ${cacheDir}`);
+      }
+    } catch (e) {
+      console.log(`Could not list cache directory: ${e.message}`);
+    }
+    
     // Try to find Chrome executable
     let executablePath = await findChromeExecutable();
     
     // If Chrome is not found, try to install it
     if (!executablePath) {
       console.log('Chrome not found, attempting to install...');
+      
       try {
-        const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
-        
         // Ensure cache directory exists
         try {
           if (!existsSync(cacheDir)) {
@@ -494,18 +534,36 @@ export async function generatePDFFromDocument(document, moduleName) {
           console.warn(`Could not create cache directory ${cacheDir}:`, mkdirError.message);
         }
         
+        // Install Chrome using @puppeteer/browsers
+        console.log(`Installing Chrome to cache directory: ${cacheDir}`);
         await install({
           browser: 'chrome',
           cacheDir: cacheDir,
         });
         console.log('Chrome installation completed');
         
-        // Try to find it again after installation
-        executablePath = await findChromeExecutable();
-        if (executablePath) {
-          console.log(`Found Chrome after installation: ${executablePath}`);
-        } else {
-          console.warn('Chrome installed but could not locate executable');
+        // Get the expected path after installation
+        try {
+          executablePath = computeExecutablePath({
+            browser: 'chrome',
+            cacheDir: cacheDir,
+          });
+          console.log(`Computed executable path: ${executablePath}`);
+          if (executablePath && existsSync(executablePath)) {
+            console.log(`Found Chrome after installation: ${executablePath}`);
+          } else {
+            console.warn(`Chrome installed but executable not found at expected path: ${executablePath}`);
+            // Try to find it again
+            executablePath = await findChromeExecutable();
+          }
+        } catch (pathError) {
+          console.warn('Could not compute executable path:', pathError.message);
+          // Try to find it using other methods
+          executablePath = await findChromeExecutable();
+        }
+        
+        if (!executablePath) {
+          console.error('Chrome installed but could not locate executable');
         }
       } catch (installError) {
         console.error('Failed to install Chrome:', installError);
@@ -526,10 +584,27 @@ export async function generatePDFFromDocument(document, moduleName) {
       ],
     };
 
-    // Set executable path if we found one
+    // Set executable path if we found one - this is REQUIRED
     if (executablePath) {
       launchOptions.executablePath = executablePath;
       console.log(`Using Chrome at: ${executablePath}`);
+    } else {
+      // If we still don't have a path, try one more time with computeExecutablePath
+      const cacheDir = getCacheDir();
+      try {
+        const computedPath = computeExecutablePath({
+          browser: 'chrome',
+          cacheDir: cacheDir,
+        });
+        if (computedPath && existsSync(computedPath)) {
+          launchOptions.executablePath = computedPath;
+          console.log(`Using computed Chrome path: ${computedPath}`);
+        } else {
+          throw new Error(`Chrome executable not found. Expected at: ${computedPath || 'unknown'}. Cache dir: ${cacheDir}. Please ensure Chrome is installed via 'npx puppeteer browsers install chrome'`);
+        }
+      } catch (pathError) {
+        throw new Error(`Chrome executable not found and could not compute path. Cache dir: ${cacheDir}. Error: ${pathError.message}. Please ensure Chrome is installed via 'npx puppeteer browsers install chrome'`);
+      }
     }
 
     browser = await puppeteer.launch(launchOptions);
