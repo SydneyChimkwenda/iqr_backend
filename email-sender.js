@@ -84,6 +84,7 @@ Thank you for your business!`;
         ciphers: 'SSLv3',
         rejectUnauthorized: false, // For self-signed certificates if needed
       },
+      connectionTimeout: 20000,
     });
 
     // Verify transporter configuration
