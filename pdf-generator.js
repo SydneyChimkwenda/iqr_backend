@@ -432,6 +432,12 @@ export async function generatePDFFromDocument(document, moduleName) {
       ],
     };
 
+    // Set executable path if provided via environment variable
+    // This is useful for custom Chrome installations
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+      launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+
     browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
     
