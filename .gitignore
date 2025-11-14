@@ -3,3 +3,6 @@ node_modules/
 *.log
 .DS_Store
 
+# Public folder with generated PDFs
+public/
+
